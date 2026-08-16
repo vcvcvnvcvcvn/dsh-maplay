@@ -135,8 +135,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 
   // Tool registrations are fiber-scoped and unregister on dispose.
   // schemastery coerces an absent `tools` array to [], which must mean
-  // "register everything" rather than "register nothing".
-  const enabledTools = resolved.tools.length > 0 ? resolved.tools : undefined
+  // "register everything" rather than "register nothing". Also guard the
+  // raw-config path (tests, programmatic use) where tools may be undefined.
+  const enabledTools = resolved.tools !== undefined && resolved.tools.length > 0 ? resolved.tools : undefined
   const registeredCount = registerMaplayTools(ctx, client, {
     prefix: resolved.prefix,
     enabledTools,
