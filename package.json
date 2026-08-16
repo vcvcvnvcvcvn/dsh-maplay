@@ -27,6 +27,13 @@
     "agent"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vcvcvnvcvcvn/dsh-maplay.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -48,8 +55,5 @@
     "@deepseek-ai/dsh-system-prompt": "^0.0.1-rc.5",
     "@types/node": "^24.0.0",
     "typescript": "~5.9.0"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1"
   }
 }

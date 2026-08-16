@@ -97,6 +97,59 @@ cordis.yml 中 `config` 支持：
 
 `get_board_info` `rollD20` `focus` `resetCamera` `moveTo` `walkTo` `emote` `breathe` `stateChange` `shoot` `flyTo` `knockback` `shove` `grab` `equip` `clearEquipment` `swingEquipment` `removeElement` `changeAppearance` `addEntity` `earthquake` `transition` `addDoor` `removeDoor` `openDoor` `closeDoor` `jump` `setNote` `explodeEntity`
 
+## 发布 / 给别人用
+
+插件可以发布到 npm（包名 `dsh-maplay` 当前未被占用），别人装好后**不需要改任何代码**，只要准备 maplay 本体并配好路径。
+
+### 1. 发布
+
+```bash
+cd dsh-maplay
+npm run build   # prepublishOnly 也会自动构建
+npm publish     # 需要先有 npm 账号
+```
+
+发布后在 GitHub 仓库加上 `dsh-plugin` topic，便于 dsh 社区发现（官方 README 推荐的做法）。
+
+### 2. 使用者安装（三步）
+
+前置：Node 22+、pnpm（`dsh plugin` 命令依赖 pnpm）、以及 dsh 本体。
+
+**① 准备 maplay**（插件只做桥接，地图本体需要 maplay checkout）：
+
+```bash
+git clone https://github.com/vcvcvnvcvcvn/maplay.git
+cd maplay && npm install
+```
+
+**② 把插件装进 dsh profile**：
+
+```bash
+dsh plugin add dsh-maplay
+```
+
+**③ 在 profile 的 patch 里挂载插件**（`~/.dsh/profiles/web/cordis.patch.yml` 或每次 `--patch`）：
+
+```yaml
+- insert:
+    - id: maplay
+      name: dsh-maplay     # 已安装时用包名，不需要绝对路径
+      config:
+        baseUrl: http://127.0.0.1:8992
+        spawn: true
+        maplayDir: /绝对/路径/到/maplay   # 唯一必须改的地方
+        port: 8992
+        mapFile: /绝对/路径/到/maplay/demo.json
+```
+
+然后 `dsh web` 或 `dsh web --patch 你的cordis.yml`，打开 `http://127.0.0.1:3080` 即进入 maplay chat 页面。
+
+### 版本兼容说明
+
+- dsh 目前是 developer preview（rc 版本，破坏性变更频繁）。插件与 dsh rc 系列一起演进；**升级 dsh 后如果插件报错，先 `npm i -g @deepseek-ai/dsh` 再重装 `dsh-maplay` 最新版**。
+- 插件自带 `@deepseek-ai/dsh-tools` 等运行时依赖副本（与 dsh 内部版本并存，`defineTool` 产物是纯数据对象，跨副本已验证兼容）。
+- 头一次启动时插件会自动拉起 maplay 的 Vite dev server；若 8992 已被占用（你自己开了 maplay），插件会直接复用，注意此时嵌入视图的 base 可能与预期不一致，建议直接访问 maplay 自己的端口。
+
 ## 与 maplay MCP 方案的对比
 
 maplay 自带 MCP server（stdio 代理到 HTTP API），dsh 的 `@deepseek-ai/dsh-mcp-client` 也能接。两种方式并存：

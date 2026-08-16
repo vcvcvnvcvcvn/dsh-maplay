@@ -16,6 +16,8 @@
 # The `!!js` expressions below are evaluated with Node globals in scope:
 #   MAPPLAY_DIR   maplay checkout directory (default /Users/vcvcvn/workspace/maplay)
 #   MAPPLAY_MAP   map JSON to load (default <MAPPLAY_DIR>/demo.json)
+#
+# 发布安装后（`dsh plugin add dsh-maplay`），把 name 改成包名即可，见 README 发布章节。
 
 - insert:
     - id: maplay
