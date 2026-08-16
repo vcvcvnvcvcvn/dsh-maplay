@@ -7,7 +7,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type GenericCallView, type JsonValue } from '@deepseek-ai/dsh-tools'
-import type { MaplayClient, MaplayToolResult } from './client.js'
+import type { MaplayToolResult } from './client.js'
+import type { ToolExecutor } from './executor.js'
 import { MAPLAY_TOOL_SPECS, type MaplayToolSpec } from './schemas.js'
 
 /** Board snapshot shape returned by maplay's get_board_info / /api/board. */
@@ -124,7 +125,7 @@ export interface RegisterMaplayToolsOptions {
  * Register each configured maplay tool. Registrations are effect-scoped: they
  * unregister automatically when the plugin fiber is disposed.
  */
-export function registerMaplayTools(ctx: Context, client: MaplayClient, options: RegisterMaplayToolsOptions): number {
+export function registerMaplayTools(ctx: Context, executor: ToolExecutor, options: RegisterMaplayToolsOptions): number {
   const prefix = options.prefix ?? ''
   const timeoutMs = options.timeoutMs ?? 30_000
   const maxBoardChars = options.maxBoardChars ?? 12_000
@@ -149,7 +150,7 @@ export function registerMaplayTools(ctx: Context, client: MaplayClient, options:
       // maplay action queue, so concurrent mutating calls are unsafe.
       isConcurrencySafe: () => spec.concurrencySafe,
       async execute(args, exec) {
-        const result = await client.call(spec.name, args as Record<string, unknown>, exec.signal)
+        const result = await executor.call(spec.name, args as Record<string, unknown>, exec.signal)
         return result as unknown as Record<string, JsonValue>
       },
       presentCall: (args) => presentMaplayCall(spec, args as Record<string, unknown>),

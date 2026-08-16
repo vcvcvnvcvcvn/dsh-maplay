@@ -2,42 +2,36 @@
 
 让 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的 agent 直接驱动 [maplay](https://github.com/vcvcvnvcvcvn/maplay) 地图动画——用 dsh 的「一切皆插件」方式，把 maplay 变成一个 Cordis 插件。
 
-`dsh-maplay` 是一个 Cordis 插件，挂在 dsh 旁边而不是改 dsh 内核：
+`dsh-maplay` 是一个 Cordis 插件，挂在 dsh 旁边而不是改 dsh 内核。**默认完全自包含**：maplay 的工具执行器以 npm 包（`@vcvcvn/maplay`）的形式打包进插件进程，前端构建产物由插件直接 serve——用户只需要 `npm install dsh-maplay`，不需要 clone maplay、不需要 vite、不需要额外进程。
 
-- **工具**：把 maplay 的 29 个动画工具（`get_board_info`、`moveTo`、`walkTo`、`emote`、`shoot`、`flyTo`、`jump`、`stateChange`……）注册进 dsh 的 `ctx.tools`，模型可以直接调用；每次调用通过 HTTP 桥接到 maplay 的 `/api/tools/call`。
-- **maplay chat 前端**：`dsh web` 打开后直接落在 maplay 的 `/chat` 页面（左边地图、右边聊天），聊天请求由插件的 `/api/chat` 桥接，模型走 dsh 的 `ctx.llm`——provider、model、凭据全部来自 dsh 自己的配置，前端零改动、无需填 API Key。
-- **生命周期**：插件启动时自动拉起 maplay 的 Vite dev server（已运行则复用），并把地图 JSON 加载进会话。
-- **嵌入视图**：在 dsh Web UI 上注册 `/maplay` 代理，`/maplay/playground` 可看全屏动画场景。
-- **提示词**：注册一段 system prompt 段落，教会模型「先 `get_board_info` 再动，只使用真实存在的 ID」；chat 桥还会把 maplay 页面的场景摘要拼进每次模型请求。
+能力：
 
-一切注册都是 effect 作用域：插件卸载时工具、路由自动回收，spawn 的 maplay 进程也会被终止。
+- **工具**：把 maplay 的 29 个动画工具（`get_board_info`、`moveTo`、`walkTo`、`emote`、`shoot`、`flyTo`、`jump`、`stateChange`……）注册进 dsh 的 `ctx.tools`，**进程内执行**（无 HTTP 往返）；
+- **maplay chat 前端**：`dsh web` 打开后直接落在 maplay 的 `/chat` 页面（左边地图、右边聊天），聊天请求由插件的 `/api/chat` 桥接，模型走 dsh 的 `ctx.llm`——provider、model、凭据全部来自 dsh 自己的配置，前端零改动、无需填 API Key，AI 配置区自动隐藏；
+- **playground 模式**：`/maplay/playground` 全屏场景，动画通过 SSE 从进程内 session 广播；
+- **headless**：`dsh --profile headless` 直接在进程内驱动地图，无需任何服务；
+- **提示词**：注册一段 system prompt 段落，教会模型「先 `get_board_info` 再动，只使用真实存在的 ID」。
+
+一切注册都是 effect 作用域：插件卸载时工具、路由自动回收。
 
 ## 架构
 
 ```text
-┌────────────────────────────── dsh ──────────────────────────────┐
-│  maplay /chat 页面（浏览器）                                     │
-│    │ 同源 POST /api/chat {text, toolCalls}                       │
-│    ▼                                                             │
-│  dsh-maplay chat bridge → ctx.llm（模型凭据用 dsh 的配置）        │
-│    │                                                            │
-│  ctx.tools（29 个 maplay 工具，供 headless/web agent 直接调用）    │
-│      │ HTTP bridge (POST /api/tools/call)                        │
-│      │ /maplay 反向代理（ctx.webServer）                          │
-└──────┼──────────────────────────────────────────────────────────┘
-       ▼
-┌────────────────────────── maplay ───────────────────────────────┐
-│  Vite dev server :8992                                          │
-│  /api/tools/*  /api/board  /api/playground/session ...          │
-│  /chat /playground ← 浏览器里的实时动画                          │
-└─────────────────────────────────────────────────────────────────┘
+┌────────────────────────────── dsh（一个进程）──────────────────────┐
+│  maplay /chat 页面（浏览器，由插件 serve 的构建产物）              │
+│    │ 同源 POST /api/chat {text, toolCalls}                         │
+│    ▼                                                              │
+│  dsh-maplay chat bridge → ctx.llm（模型凭据用 dsh 的配置）          │
+│    │                                                              │
+│  ctx.tools（29 个 maplay 工具，进程内执行）                         │
+│    │ 执行器 = @vcvcvn/maplay（打包进插件）                          │
+│    │ 进程内 session（map + actionQueue）→ SSE → playground 页面     │
+└──────────────────────────────────────────────────────────────────┘
 ```
-
-插件不 import maplay 的任何代码，只依赖其 HTTP API——两个项目完全解耦。
 
 ## 快速开始
 
-前置：Node.js 22+、maplay checkout（`npm install` 过）。
+前置：Node.js 22+ 和 dsh（`npm i -g @deepseek-ai/dsh`）。**不需要 maplay checkout。**
 
 ### Web 模式（推荐，打开即 maplay chat）
 
@@ -49,17 +43,27 @@ dsh web --patch /path/to/dsh-maplay/cordis.yml
   - **AI 配置区已隐藏**（dsh 模式下自动生效），右上角只显示 `⚙ dsh · deepseek-v4-pro` 只读徽标；
   - provider、model、凭据全部来自 dsh 的配置，无需填任何 API Key；
   - System Prompt 也由 dsh 侧提供（插件 `chatSystemPrompt` 配置，默认地图动画助手提示词）；
-- 想全屏看动画：`http://127.0.0.1:3080/maplay/playground`；
+- 想全屏看动画：`http://127.0.0.1:3080/maplay/playground`（SSE 实时播放）；
 - 在会话里输入比如：
 
   > 让 Leo 宣布比赛开始，Toby 慢走到胡萝卜，Harry 跳到树下睡一觉
 
-### Headless 模式（一次性任务，dsh agent 直接驱动服务端地图）
+### Headless 模式（一次性任务，进程内驱动地图）
 
 ```bash
 dsh --profile headless --patch /path/to/dsh-maplay/cordis.headless.yml \
   "让乌龟慢走到胡萝卜，兔子跳到树旁"
 ```
+
+### 换地图
+
+配置 `mapFile` 指向自己的地图 JSON：
+
+```yaml
+mapFile: /绝对/路径/到/你的地图.json
+```
+
+缺省使用 `@vcvcvn/maplay` 包内自带的 demo.json（龟兔赛跑）。
 
 ### 环境变量
 
@@ -76,9 +80,11 @@ cordis.yml 中 `config` 支持：
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `baseUrl` | `http://127.0.0.1:8992` | maplay 服务地址 |
-| `spawn` | `true` | 无人监听时自动拉起 maplay dev server |
-| `maplayDir` | — | maplay checkout 绝对路径（spawn 时需要） |
+| `embedded` | `true` | 自包含模式（进程内执行器 + serve 前端）；`false` 切换外部桥接 |
+| `mapFile` | 包内 demo.json | 启动时加载的地图 JSON |
+| `baseUrl` | `http://127.0.0.1:8992` | 外部模式：maplay 服务地址 |
+| `spawn` | `true` | 外部模式：无人监听时自动拉起 maplay dev server |
+| `maplayDir` | — | 外部模式：maplay checkout 绝对路径（spawn 时需要） |
 | `host` / `port` | `127.0.0.1` / `8992` | 拉起 vite 时的绑定参数 |
 | `startupTimeoutMs` | `60000` | 等待服务健康的超时 |
 | `mapFile` | — | 启动时加载的地图 JSON |
@@ -99,56 +105,65 @@ cordis.yml 中 `config` 支持：
 
 ## 发布 / 给别人用
 
-插件可以发布到 npm（包名 `dsh-maplay` 当前未被占用），别人装好后**不需要改任何代码**，只要准备 maplay 本体并配好路径。
+`dsh-maplay` 依赖 npm 包 `@vcvcvn/maplay`（工具执行器 + 前端构建产物 + demo.json），所以**使用者不需要 clone maplay**——`npm install dsh-maplay` 就全有了。发布前两个包都要发：
 
-### 1. 发布
+### 1. 发布 maplay 运行时包
+
+```bash
+cd maplay
+npm run build        # 前端 dist（--base=/maplay/）+ 执行器 lib/embed.js + d.ts
+npm publish          # 发布 @vcvcvn/maplay
+```
+
+### 2. 发布插件
 
 ```bash
 cd dsh-maplay
-npm run build   # prepublishOnly 也会自动构建
-npm publish     # 需要先有 npm 账号
+npm run build
+npm publish          # 发布 dsh-maplay（发布前把 package.json 里的
+                     # @vcvcvn/maplay 依赖从 file:../maplay 改成 ^0.2.0）
 ```
 
-发布后在 GitHub 仓库加上 `dsh-plugin` topic，便于 dsh 社区发现（官方 README 推荐的做法）。
+发布后在 GitHub 仓库加上 `dsh-plugin` topic，便于 dsh 社区发现。
 
-### 2. 使用者安装（三步）
+### 3. 使用者安装（两步）
 
-前置：Node 22+、pnpm（`dsh plugin` 命令依赖 pnpm）、以及 dsh 本体。
-
-**① 准备 maplay**（插件只做桥接，地图本体需要 maplay checkout）：
+前置：Node 22+、pnpm（`dsh plugin` 命令依赖 pnpm）、dsh 本体。
 
 ```bash
-git clone https://github.com/vcvcvnvcvcvn/maplay.git
-cd maplay && npm install
+dsh plugin add dsh-maplay      # 自动带上 @vcvcvn/maplay
 ```
 
-**② 把插件装进 dsh profile**：
-
-```bash
-dsh plugin add dsh-maplay
-```
-
-**③ 在 profile 的 patch 里挂载插件**（`~/.dsh/profiles/web/cordis.patch.yml` 或每次 `--patch`）：
+然后在 `~/.dsh/profiles/web/cordis.patch.yml`（或每次 `--patch`）挂载：
 
 ```yaml
 - insert:
     - id: maplay
-      name: dsh-maplay     # 已安装时用包名，不需要绝对路径
+      name: dsh-maplay          # 已安装时用包名，不需要绝对路径
       config:
-        baseUrl: http://127.0.0.1:8992
-        spawn: true
-        maplayDir: /绝对/路径/到/maplay   # 唯一必须改的地方
-        port: 8992
-        mapFile: /绝对/路径/到/maplay/demo.json
+        embedded: true
 ```
 
-然后 `dsh web` 或 `dsh web --patch 你的cordis.yml`，打开 `http://127.0.0.1:3080` 即进入 maplay chat 页面。
+`dsh web` 后打开 `http://127.0.0.1:3080` 即进入 maplay chat 页面，动画、工具、headless 全部可用。
 
 ### 版本兼容说明
 
 - dsh 目前是 developer preview（rc 版本，破坏性变更频繁）。插件与 dsh rc 系列一起演进；**升级 dsh 后如果插件报错，先 `npm i -g @deepseek-ai/dsh` 再重装 `dsh-maplay` 最新版**。
 - 插件自带 `@deepseek-ai/dsh-tools` 等运行时依赖副本（与 dsh 内部版本并存，`defineTool` 产物是纯数据对象，跨副本已验证兼容）。
-- 头一次启动时插件会自动拉起 maplay 的 Vite dev server；若 8992 已被占用（你自己开了 maplay），插件会直接复用，注意此时嵌入视图的 base 可能与预期不一致，建议直接访问 maplay 自己的端口。
+
+## 外部 maplay 兼容模式（可选）
+
+默认 `embedded: true` 完全自包含。如果希望继续用独立运行的 maplay（dev server 或你自己的部署），设置 `embedded: false`，并配置 `baseUrl` / `spawn` / `maplayDir`：
+
+```yaml
+config:
+  embedded: false
+  baseUrl: http://127.0.0.1:8992
+  spawn: false            # true 时插件会自动拉起 maplay dev server
+  # maplayDir: /路径/到/maplay
+```
+
+此时工具走 HTTP 桥接到外部 maplay，`/maplay` 为反向代理。
 
 ## 与 maplay MCP 方案的对比
 

@@ -3,36 +3,35 @@
 # Usage:
 #   dsh web --patch /path/to/dsh-maplay/cordis.yml
 #
-# The plugin spawns the maplay Vite dev server (if nothing is already
-# listening on port 8992), loads a map JSON into its session, registers the
-# full maplay tool suite, and — most importantly — makes the maplay chat
-# page the dsh frontend: opening http://127.0.0.1:3080 lands directly on
-# /maplay/chat (left: live map, right: conversation), and chat requests are
-# bridged to dsh's own model route (ctx.llm), so no API key entry is needed.
-# /maplay/playground still shows the full-screen scene.
+# Default mode is EMBEDDED and fully self-contained: maplay's tool executor
+# runs inside the dsh process and the built frontend is served from the
+# @vcvcvn/maplay npm package. No maplay checkout, no vite, no extra process.
+#
+# Opening http://127.0.0.1:3080 lands directly on the maplay chat page
+# (left: live map, right: conversation). Chat requests are bridged to dsh's
+# own model route (ctx.llm) — no API key entry needed. /maplay/playground
+# shows the full-screen scene, animated over SSE from the in-process session.
 #
 # NOTE: the plugin `name` must be an ABSOLUTE path — relative names resolve
 # against the dsh profile directory (~/.dsh/profiles/web/), not this file.
-# The `!!js` expressions below are evaluated with Node globals in scope:
-#   MAPPLAY_DIR   maplay checkout directory (default /Users/vcvcvn/workspace/maplay)
-#   MAPPLAY_MAP   map JSON to load (default <MAPPLAY_DIR>/demo.json)
+# After `dsh plugin add dsh-maplay`, use the bare package name instead (see
+# README "发布 / 给别人用").
 #
-# 发布安装后（`dsh plugin add dsh-maplay`），把 name 改成包名即可，见 README 发布章节。
+# Optional fields:
+#   mapFile     自己的地图 JSON；缺省用 @vcvcvn/maplay 自带的 demo.json
+#   embedded    false 时切换为外部桥接模式（baseUrl + spawn + maplayDir 生效）
+#   chatSystemPrompt  自定义 chat 桥的 System Prompt
 
 - insert:
     - id: maplay
       name: /Users/vcvcvn/workspace/dsh-maplay/lib/index.js
       config:
-        baseUrl: http://127.0.0.1:8992
-        spawn: true
-        maplayDir: !!js (process.env.MAPPLAY_DIR || '/Users/vcvcvn/workspace/maplay')
-        port: 8992
-        host: 127.0.0.1
-        mapFile: !!js (process.env.MAPPLAY_MAP || (process.env.MAPPLAY_DIR || '/Users/vcvcvn/workspace/maplay') + '/demo.json')
+        embedded: true
+        # mapFile: /绝对/路径/到/你的地图.json
         prefix: ''
         fetchTimeoutMs: 30000
         maxBoardChars: 12000
         exposeWeb: true
         webPath: /maplay
-        # chatBridge: true
-        # chatSystemPrompt: 你可以在这里自定义 chat 桥使用的 System Prompt
+        chatBridge: true
+        # chatSystemPrompt: 自定义 System Prompt

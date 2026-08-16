@@ -2,26 +2,16 @@
 #
 # Usage:
 #   dsh --profile headless --patch /path/to/dsh-maplay/cordis.headless.yml \
-#     "Start the tortoise and hare race. Leo announces the start, Toby walks
-#      toward the carrots, Harry runs to the tree and naps, then Toby wins."
+#     "让乌龟慢走到胡萝卜，兔子跳到树旁"
 #
-# The headless bundle has no Web UI, so exposeWeb is off; everything else
-# (spawn + map load + tools) works the same way.
-#
-# Env overrides:
-#   MAPPLAY_DIR   maplay checkout directory (default /Users/vcvcvn/workspace/maplay)
-#   MAPPLAY_MAP   map JSON to load (default <MAPPLAY_DIR>/demo.json)
+# Embedded mode: the maplay executor runs inside the dsh process, so headless
+# needs no maplay server, no web UI — the model drives the in-process map.
 
 - insert:
     - id: maplay
       name: /Users/vcvcvn/workspace/dsh-maplay/lib/index.js
       config:
-        baseUrl: http://127.0.0.1:8992
-        spawn: true
-        maplayDir: !!js (process.env.MAPPLAY_DIR || '/Users/vcvcvn/workspace/maplay')
-        port: 8992
-        host: 127.0.0.1
-        mapFile: !!js (process.env.MAPPLAY_MAP || (process.env.MAPPLAY_DIR || '/Users/vcvcvn/workspace/maplay') + '/demo.json')
+        embedded: true
         prefix: ''
         fetchTimeoutMs: 30000
         maxBoardChars: 12000

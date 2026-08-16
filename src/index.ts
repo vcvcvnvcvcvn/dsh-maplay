@@ -2,27 +2,34 @@
  * dsh-maplay — a DeepSeek Harness plugin that turns the maplay 2D map
  * animation playground into agent-controllable tools.
  *
- * What the plugin does, following the "everything is a plugin" model:
+ * Two modes:
  *
- *  1. Registers the full maplay tool suite (moveTo, emote, shoot, flyTo, ...)
- *     into `ctx.tools`, bridged over maplay's HTTP API. The agent loop, tool
- *     approval, timeouts, and session logs stay dsh's.
- *  2. Optionally spawns the maplay Vite dev server as a child process and
- *     loads a map JSON into its session, so `dsh web --patch` is a
- *     one-command bring-up.
- *  3. Optionally registers a `/maplay` reverse-proxy route on
- *     `ctx.webServer`, embedding the live playground in the dsh Web UI.
- *  4. Adds a system-prompt section teaching the model when to use the tools.
+ *  1. **Embedded (default, self-contained).** maplay's tool executor runs
+ *     inside this process (bundled from @vcvcvn/maplay) and the built
+ *     frontend is served through ctx.webServer. No maplay checkout, no vite,
+ *     no extra process — `npm install dsh-maplay` is all a user needs.
+ *  2. **External (compat).** The original bridge: tools call an externally
+ *     running maplay server over HTTP (optionally spawned by the plugin).
  *
- * The plugin fiber stays in LOADING until the maplay server is healthy and
- * the optional map is loaded; a failure rejects the fiber (Cordis rolls the
- * plugin back). Every effect unwinds on dispose, and the spawned maplay
- * process is terminated too.
+ * What the plugin does in both modes, following the "everything is a plugin"
+ * model:
+ *
+ *  - Registers the full maplay tool suite (moveTo, emote, shoot, flyTo, ...)
+ *    into `ctx.tools`.
+ *  - Embeds the maplay chat page as the dsh frontend: `/` redirects to
+ *    `/maplay/chat`, and `/api/chat` is served by the plugin's chat bridge
+ *    (model + credentials come from dsh's ctx.llm). Playground pages receive
+ *    animations over SSE from the in-process session.
+ *  - Adds a system-prompt section teaching the model when to use the tools.
+ *
+ * Every registration is effect-scoped and unwinds when the plugin is
+ * disposed.
  *
  * @module dsh-maplay
  */
 
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -34,6 +41,8 @@ import { MaplayClient } from './client.js'
 import { registerMaplayTools } from './tools.js'
 import { ensureMaplayServer, stopMaplayServer, type MaplaySpawnResult } from './spawn.js'
 import { registerMaplayProxy } from './proxy.js'
+import { EmbeddedExecutor, HttpExecutor, loadEmbeddedMap, type ToolExecutor } from './executor.js'
+import { maplayPackageRoot, serveMaplayEmbedded } from './embedded-web.js'
 import { handleChatBridge, type OssChatRequest } from './chat-bridge.js'
 
 /** Stable Cordis plugin name used by loader diagnostics. */
@@ -44,11 +53,18 @@ export const inject = ['tools', 'systemPrompt', 'llm', 'agentDefaultModel']
 
 /** Plugin config. Every field has a default, so a bare `- insert: { name: dsh-maplay }` already works. */
 export interface Config {
-  /** Base URL of the maplay server. Defaults to http://127.0.0.1:8992. */
+  /**
+   * Self-contained mode: run maplay's executor in-process and serve the built
+   * frontend from the @vcvcvn/maplay package. Defaults to true.
+   */
+  embedded?: boolean
+  /** Map JSON to load into the session. Defaults to the maplay package's demo.json. */
+  mapFile?: string
+  /** Base URL of an external maplay server (external mode). Defaults to http://127.0.0.1:8992. */
   baseUrl?: string
-  /** Spawn the maplay Vite dev server when nothing answers at baseUrl. Defaults to true. */
+  /** Spawn an external maplay dev server when nothing answers at baseUrl (external mode). Defaults to true. */
   spawn?: boolean
-  /** Absolute path to a maplay checkout. Required when `spawn` is true and no server is running. */
+  /** Absolute path to a maplay checkout (external mode + spawn). */
   maplayDir?: string
   /** Host passed to the spawned vite process. Defaults to 127.0.0.1. */
   host?: string
@@ -56,8 +72,6 @@ export interface Config {
   port?: number
   /** Wait budget for the spawned server to become healthy (ms). Defaults to 60000. */
   startupTimeoutMs?: number
-  /** Optional map JSON file to load into the maplay session on startup. */
-  mapFile?: string
   /** Prefix added to every exposed tool name, e.g. `maplay_` avoids name collisions. Defaults to ''. */
   prefix?: string
   /** Only these maplay tools are registered. Defaults to all. */
@@ -66,7 +80,7 @@ export interface Config {
   fetchTimeoutMs?: number
   /** Cap on board text included in tool results (chars). Defaults to 12000. */
   maxBoardChars?: number
-  /** Register the /maplay reverse proxy on ctx.webServer. Defaults to true. */
+  /** Register the web surface on ctx.webServer. Defaults to true. */
   exposeWeb?: boolean
   /** Route prefix for the embedded maplay view. Defaults to /maplay. */
   webPath?: string
@@ -83,13 +97,14 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
+  embedded: z.boolean().default(true),
+  mapFile: z.string(),
   baseUrl: z.string().default('http://127.0.0.1:8992'),
   spawn: z.boolean().default(true),
   maplayDir: z.string(),
   host: z.string().default('127.0.0.1'),
   port: z.number().default(8992),
   startupTimeoutMs: z.number().default(60_000),
-  mapFile: z.string(),
   prefix: z.string().default(''),
   tools: z.array(z.string()),
   fetchTimeoutMs: z.number().default(30_000),
@@ -102,17 +117,6 @@ export const Config: z<Config> = z.object({
 
 /** Complete config after schemastery applies every field default. */
 type ResolvedConfig = Required<Config>
-
-/**
- * HTML snippet that flips the maplay chat page into dsh mode: the frontend
- * hides its AI settings panel and shows a read-only model badge. The model
- * name is read fresh per response so settings changes apply immediately.
- */
-function dshModeInject(ctx: Context): string | undefined {
-  const defaultModel = ctx.get('agentDefaultModel')
-  const model = defaultModel?.currentSelection().model ?? ''
-  return `<script>window.__MAPPLAY_DSH__=true;window.__MAPPLAY_DSH_MODEL__=${JSON.stringify(model)};<\/script>`
-}
 
 /** Read a request body as JSON. */
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -179,44 +183,95 @@ async function serveChatBridge(
   }
 }
 
-/** Load a map JSON file and POST it as the maplay playground session. */
-async function loadMapFile(client: MaplayClient, mapFile: string): Promise<void> {
+/** Read a map JSON file (user path or the maplay package default). */
+async function readMapFile(mapFile: string | undefined): Promise<unknown> {
+  const file = mapFile !== undefined && mapFile.length > 0
+    ? mapFile
+    : join(maplayPackageRoot(), 'demo.json')
   let raw: string
   try {
-    raw = await readFile(mapFile, 'utf8')
+    raw = await readFile(file, 'utf8')
   } catch (error) {
-    throw new Error(`dsh-maplay: cannot read mapFile "${mapFile}": ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`dsh-maplay: cannot read map file "${file}": ${error instanceof Error ? error.message : String(error)}`)
   }
-  let map: unknown
   try {
-    map = JSON.parse(raw)
+    return JSON.parse(raw) as unknown
   } catch (error) {
-    throw new Error(`dsh-maplay: mapFile "${mapFile}" is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`dsh-maplay: map file "${file}" is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
   }
-  const accepted = await client.loadSession({
-    map,
-    messages: [],
-    actionRequest: null,
-    actionQueue: [],
-    updatedAt: Date.now(),
-  })
-  if (!accepted) throw new Error(`dsh-maplay: maplay rejected map from "${mapFile}"`)
 }
 
-/**
- * Mount the plugin. Synchronous registrations happen first (tools, prompt
- * section, proxy, spawn teardown); then the fiber awaits the async bring-up
- * (spawn maplay if needed, load the map) and rejects on failure so Cordis
- * rolls the plugin back.
- */
-export async function apply(ctx: Context, config: Config): Promise<void> {
-  const resolved = config as ResolvedConfig
+/** HTML snippet that flips the maplay chat page into dsh mode. */
+function dshModeInject(ctx: Context): () => string | undefined {
+  return () => {
+    const defaultModel = ctx.get('agentDefaultModel')
+    const model = defaultModel?.currentSelection().model ?? ''
+    return `<script>window.__MAPPLAY_DSH__=true;window.__MAPPLAY_DSH_MODEL__=${JSON.stringify(model)};<\/script>`
+  }
+}
+
+/** Mount the embedded (self-contained) mode. */
+async function applyEmbedded(ctx: Context, resolved: ResolvedConfig): Promise<void> {
+  // schemastery coerces an absent `tools` array to [], which must mean
+  // "register everything" rather than "register nothing". Also guard the
+  // raw-config path (tests, programmatic use) where tools may be undefined.
+  const enabledTools = resolved.tools !== undefined && resolved.tools.length > 0 ? resolved.tools : undefined
+  const executor = new EmbeddedExecutor(enabledTools)
+
+  // Load the map into the in-process maplay session.
+  const map = await readMapFile(resolved.mapFile)
+  loadEmbeddedMap(map)
+
+  registerMaplayTools(ctx, executor, {
+    prefix: resolved.prefix,
+    enabledTools,
+    timeoutMs: resolved.fetchTimeoutMs,
+    maxBoardChars: resolved.maxBoardChars,
+  })
+  ctx.logger.info(`dsh-maplay: embedded mode active (map: ${(map as { name?: string }).name ?? 'unknown'})`)
+
+  ctx.systemPrompt.section({
+    name: 'tool:dsh-maplay',
+    order: 120,
+    text:
+      `maplay tools control a live 2D map animation scene (entities, objects, walls, doors, camera, ` +
+      `projectiles, emotion bubbles). Before animating, call get_board_info to learn the real IDs that ` +
+      `exist on the current board, and only use IDs returned there. Each call applies one animation beat; ` +
+      `compose several calls to tell a story. When a tool reports an error such as an unknown target, ` +
+      `re-read the board and retry with a real ID.`,
+  })
+
+  // Optional seam: serve the maplay frontend + API on ctx.webServer.
+  // The webServer service may activate after this plugin (it lives in the
+  // web-app bundle), so probe now and again whenever a service binding changes.
+  let webRegistered = false
+  const registerWeb = (): void => {
+    if (webRegistered || !resolved.exposeWeb) return
+    const webServer = ctx.get('webServer')
+    if (webServer === undefined) return
+    webRegistered = true
+    ctx.effect(() => {
+      return serveMaplayEmbedded(webServer, executor, {
+        path: resolved.webPath,
+        chatHandler: resolved.chatBridge
+          ? (req, res) => serveChatBridge(ctx, req, res, resolved.chatSystemPrompt)
+          : undefined,
+        htmlInject: resolved.chatBridge ? dshModeInject(ctx) : undefined,
+      })
+    }, 'dsh-maplay.embedded-web')
+  }
+  registerWeb()
+  ctx.on('internal/service', registerWeb, { global: true })
+}
+
+/** Mount the external (HTTP bridge) mode. */
+async function applyExternal(ctx: Context, resolved: ResolvedConfig): Promise<void> {
   const client = new MaplayClient({
     baseUrl: resolved.baseUrl,
     fetchTimeoutMs: resolved.fetchTimeoutMs,
   })
+  const executor = new HttpExecutor(client)
 
-  // Kill the spawned maplay process when the plugin unloads.
   let spawnResult: MaplaySpawnResult = { spawned: false }
   ctx.effect(() => {
     return () => {
@@ -224,18 +279,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }
   }, 'dsh-maplay.spawn')
 
-  // Tool registrations are fiber-scoped and unregister on dispose.
-  // schemastery coerces an absent `tools` array to [], which must mean
-  // "register everything" rather than "register nothing". Also guard the
-  // raw-config path (tests, programmatic use) where tools may be undefined.
   const enabledTools = resolved.tools !== undefined && resolved.tools.length > 0 ? resolved.tools : undefined
-  const registeredCount = registerMaplayTools(ctx, client, {
+  registerMaplayTools(ctx, executor, {
     prefix: resolved.prefix,
     enabledTools,
     timeoutMs: resolved.fetchTimeoutMs,
     maxBoardChars: resolved.maxBoardChars,
   })
-  ctx.logger.info(`dsh-maplay: registered ${registeredCount} maplay tools`)
 
   ctx.systemPrompt.section({
     name: 'tool:dsh-maplay',
@@ -249,12 +299,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })
 
   // Optional seam: embed the maplay playground inside the dsh Web UI.
-  // The webServer service may activate after this plugin (it lives in the
-  // web-app bundle), so probe after the spawn decision below and again
-  // whenever any service binding changes. `proxyStripPrefix` is decided by
-  // the spawn outcome: vite started with `--base=<path>/` already emits
-  // prefixed URLs, so the proxy must NOT strip; an external maplay (or a
-  // non-web spawn) emits root-relative URLs, so the proxy strips.
   let proxyStripPrefix = true
   let proxyRegistered = false
   const registerProxy = (server: unknown): void => {
@@ -271,7 +315,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           ? (req, res) => serveChatBridge(ctx, req, res, resolved.chatSystemPrompt)
           : undefined,
         htmlInject: resolved.chatBridge
-          ? () => dshModeInject(ctx)
+          ? () => dshModeInject(ctx)()
           : undefined,
       })
     }, 'dsh-maplay.proxy')
@@ -282,7 +326,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (server !== undefined) registerProxy(server)
   }
 
-  // Async bring-up: from here on, failures reject the fiber.
   if (resolved.spawn) {
     if (resolved.maplayDir === undefined || resolved.maplayDir.length === 0) {
       throw new Error(
@@ -294,13 +337,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       maplayDir: resolved.maplayDir,
       host: resolved.host,
       port: resolved.port,
-      // Match vite's emitted asset URLs to the web mount so the embedded
-      // /maplay view loads its modules.
-      base: resolved.exposeWeb ? `${resolved.webPath}/` : '',
+      base: resolved.exposeWeb && resolved.chatBridge ? `${resolved.webPath}/` : '',
       startupTimeoutMs: resolved.startupTimeoutMs,
     })
-    // vite started with `--base=<path>/`: asset URLs already carry the mount
-    // prefix, so the proxy forwards paths verbatim.
     if (spawnResult.spawned && resolved.exposeWeb) proxyStripPrefix = false
   } else if (!(await client.health())) {
     throw new Error(
@@ -309,18 +348,27 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     )
   }
 
-  // Register the proxy now that the strip decision is final; keep listening
-  // for a late webServer activation.
   if (resolved.exposeWeb) {
     probeWebServer()
     ctx.on('internal/service', probeWebServer, { global: true })
   }
+}
 
-  if (resolved.mapFile !== undefined && resolved.mapFile.length > 0) {
-    await loadMapFile(client, resolved.mapFile)
+/**
+ * Mount the plugin. Embedded mode is the default and fully self-contained;
+ * set `embedded: false` to bridge to an external maplay server instead.
+ */
+export async function apply(ctx: Context, config: Config): Promise<void> {
+  const resolved = config as ResolvedConfig
+  if (resolved.embedded) {
+    await applyEmbedded(ctx, resolved)
+  } else {
+    await applyExternal(ctx, resolved)
   }
 }
 
 export { MaplayClient, MaplayError, type MaplayToolResult, type MaplayToolInfo, type MaplayClientOptions } from './client.js'
 export { MAPLAY_TOOL_SPECS, MAPLAY_TOOL_NAMES, type MaplayToolSpec } from './schemas.js'
 export { formatBoard, formatResult } from './tools.js'
+export { EmbeddedExecutor, HttpExecutor, loadEmbeddedMap, embeddedBoard, embeddedToolList, type ToolExecutor } from './executor.js'
+export { serveMaplayEmbedded, maplayPackageRoot } from './embedded-web.js'
