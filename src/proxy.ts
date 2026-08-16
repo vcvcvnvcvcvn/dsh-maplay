@@ -58,6 +58,12 @@ export interface RegisterMaplayProxyOptions {
    * instead of proxying to maplay (the plugin's own chat bridge).
    */
   chatHandler?: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
+  /**
+   * Optional per-response HTML injection for proxied pages; receives the
+   * upstream pathname and may return a snippet (or undefined to skip). Used
+   * to flip the maplay chat page into dsh mode.
+   */
+  htmlInject?: (pathname: string) => string | undefined
 }
 
 /**
@@ -66,6 +72,8 @@ export interface RegisterMaplayProxyOptions {
  *   (mount-prefixed requests to a root-relative upstream).
  * @param prependPrefix - when set, this prefix is added to the forwarded pathname
  *   (root-relative requests to a base-prefixed upstream, e.g. vite `--base`).
+ * @param htmlInject - optional per-response HTML snippet injected before `</head>`
+ *   for matching HTML pages (e.g. to activate the frontend's dsh mode).
  */
 export function proxyToMaplay(
   baseUrl: string,
@@ -73,6 +81,7 @@ export function proxyToMaplay(
   res: ServerResponse,
   stripPrefix?: string,
   prependPrefix?: string,
+  htmlInject?: (pathname: string) => string | undefined,
 ): void {
   const upstream = new URL(baseUrl)
   const raw = req.url ?? '/'
@@ -106,6 +115,24 @@ export function proxyToMaplay(
         if (typeof location === 'string' && location.startsWith('/')) {
           headers.location = `${stripPrefix ?? ''}${location}`
         }
+      }
+      // Inject a snippet into HTML pages when the caller asked for it.
+      const inject = htmlInject?.(url.pathname)
+      const contentType = typeof headers['content-type'] === 'string' ? headers['content-type'] : ''
+      if (inject !== undefined && req.method === 'GET' && contentType.includes('text/html')) {
+        let body = ''
+        upstreamRes.setEncoding('utf8')
+        upstreamRes.on('data', (chunk) => { body += chunk })
+        upstreamRes.on('end', () => {
+          const injected = body.includes('</head>')
+            ? body.replace('</head>', `${inject}</head>`)
+            : body + inject
+          headers['content-length'] = String(Buffer.byteLength(injected))
+          delete headers['transfer-encoding']
+          res.writeHead(status, headers)
+          res.end(injected)
+        })
+        return
       }
       res.writeHead(status, headers)
       upstreamRes.pipe(res)
@@ -184,7 +211,7 @@ export function registerMaplayProxy(
         res.end()
         return
       }
-      proxyToMaplay(upstream, req, res, strip)
+      proxyToMaplay(upstream, req, res, strip, undefined, options.htmlInject)
     },
   }))
 

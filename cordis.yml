@@ -32,3 +32,5 @@
         maxBoardChars: 12000
         exposeWeb: true
         webPath: /maplay
+        # chatBridge: true
+        # chatSystemPrompt: 你可以在这里自定义 chat 桥使用的 System Prompt

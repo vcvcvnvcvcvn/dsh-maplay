@@ -75,8 +75,12 @@ export async function handleChatBridge(
   selection: ModelSelection,
   payload: OssChatRequest,
   signal?: AbortSignal,
+  systemPromptOverride?: string,
 ): Promise<OssChatResponse> {
-  const systemPrompt = payload.apiConfig?.systemPrompt
+  // In dsh mode the system prompt comes from dsh's own config, not from the
+  // page's (hidden) AI settings panel.
+  const systemPrompt = systemPromptOverride
+    ?? payload.apiConfig?.systemPrompt
     ?? 'You are a map animation assistant. When the user asks for animation, movement, emotes, state changes, or camera work, you must call tools. Tool arguments must only use IDs that exist in the current scene summary. Do not invent IDs.'
 
   // Mirror maplay's server-side assembly: the user's system prompt plus the

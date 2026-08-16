@@ -45,8 +45,10 @@
 dsh web --patch /path/to/dsh-maplay/cordis.yml
 ```
 
-- 打开 `http://127.0.0.1:3080` → 直接进入 maplay 的 chat 页面（左边地图、右边聊天），模型已默认使用 dsh 配置的 provider/model，不需要填任何 API Key；
-- 在「AI 配置」里还可以改 System Prompt；Base URL / API Key / Model 字段由 dsh 接管，填写会被忽略；
+- 打开 `http://127.0.0.1:3080` → 直接进入 maplay 的 chat 页面（左边地图、右边聊天）：
+  - **AI 配置区已隐藏**（dsh 模式下自动生效），右上角只显示 `⚙ dsh · deepseek-v4-pro` 只读徽标；
+  - provider、model、凭据全部来自 dsh 的配置，无需填任何 API Key；
+  - System Prompt 也由 dsh 侧提供（插件 `chatSystemPrompt` 配置，默认地图动画助手提示词）；
 - 想全屏看动画：`http://127.0.0.1:3080/maplay/playground`；
 - 在会话里输入比如：
 
@@ -87,6 +89,7 @@ cordis.yml 中 `config` 支持：
 | `exposeWeb` | `true` | 注册 `/maplay` 嵌入视图（headless 下自动跳过） |
 | `webPath` | `/maplay` | 嵌入视图路径前缀 |
 | `chatBridge` | `true` | 用 dsh 的 `ctx.llm` 接管 `/api/chat`，并把 `/` 重定向到 chat 页面（maplay chat 成为 dsh 前端） |
+| `chatSystemPrompt` | 内置默认 | chat 桥使用的 System Prompt（dsh 模式下面板隐藏、前端填的会被忽略） |
 
 ## 工具清单
 

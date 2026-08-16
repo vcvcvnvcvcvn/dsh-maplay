@@ -75,6 +75,11 @@ export interface Config {
    * becomes the dsh frontend, and redirect `/` to the chat page. Defaults to true.
    */
   chatBridge?: boolean
+  /**
+   * System prompt used by the chat bridge. When unset, a maplay-friendly
+   * default is used; the frontend's own AI settings panel is ignored in dsh mode.
+   */
+  chatSystemPrompt?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -92,10 +97,22 @@ export const Config: z<Config> = z.object({
   exposeWeb: z.boolean().default(true),
   webPath: z.string().default('/maplay'),
   chatBridge: z.boolean().default(true),
+  chatSystemPrompt: z.string(),
 })
 
 /** Complete config after schemastery applies every field default. */
 type ResolvedConfig = Required<Config>
+
+/**
+ * HTML snippet that flips the maplay chat page into dsh mode: the frontend
+ * hides its AI settings panel and shows a read-only model badge. The model
+ * name is read fresh per response so settings changes apply immediately.
+ */
+function dshModeInject(ctx: Context): string | undefined {
+  const defaultModel = ctx.get('agentDefaultModel')
+  const model = defaultModel?.currentSelection().model ?? ''
+  return `<script>window.__MAPPLAY_DSH__=true;window.__MAPPLAY_DSH_MODEL__=${JSON.stringify(model)};<\/script>`
+}
 
 /** Read a request body as JSON. */
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -121,7 +138,12 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
  * suite; the reply keeps maplay's `{ text, toolCalls }` contract so the
  * unmodified chat page drives the scene exactly as before.
  */
-async function serveChatBridge(ctx: Context, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function serveChatBridge(
+  ctx: Context,
+  req: IncomingMessage,
+  res: ServerResponse,
+  systemPromptOverride?: string,
+): Promise<void> {
   const writeError = (status: number, message: string): void => {
     if (res.headersSent) {
       res.destroy()
@@ -147,7 +169,7 @@ async function serveChatBridge(ctx: Context, req: IncomingMessage, res: ServerRe
       writeError(503, 'dsh-maplay: no model selected — configure a model in dsh first')
       return
     }
-    const result = await handleChatBridge(ctx, llm, selection, payload as OssChatRequest)
+    const result = await handleChatBridge(ctx, llm, selection, payload as OssChatRequest, undefined, systemPromptOverride)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(result))
   } catch (error) {
@@ -246,7 +268,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         stripPrefix: proxyStripPrefix,
         rootToChat: resolved.chatBridge,
         chatHandler: resolved.chatBridge
-          ? (req, res) => serveChatBridge(ctx, req, res)
+          ? (req, res) => serveChatBridge(ctx, req, res, resolved.chatSystemPrompt)
+          : undefined,
+        htmlInject: resolved.chatBridge
+          ? () => dshModeInject(ctx)
           : undefined,
       })
     }, 'dsh-maplay.proxy')
