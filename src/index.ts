@@ -23,21 +23,24 @@
  */
 
 import { readFile } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { MaplayClient } from './client.js'
 import { registerMaplayTools } from './tools.js'
 import { ensureMaplayServer, stopMaplayServer, type MaplaySpawnResult } from './spawn.js'
 import { registerMaplayProxy } from './proxy.js'
+import { handleChatBridge, type OssChatRequest } from './chat-bridge.js'
 
 /** Stable Cordis plugin name used by loader diagnostics. */
 export const name = 'dsh-maplay'
 
 /** Services required by the plugin. `webServer` is optional (checked via ctx.get). */
-export const inject = ['tools', 'systemPrompt']
+export const inject = ['tools', 'systemPrompt', 'llm', 'agentDefaultModel']
 
 /** Plugin config. Every field has a default, so a bare `- insert: { name: dsh-maplay }` already works. */
 export interface Config {
@@ -67,6 +70,11 @@ export interface Config {
   exposeWeb?: boolean
   /** Route prefix for the embedded maplay view. Defaults to /maplay. */
   webPath?: string
+  /**
+   * Serve `/api/chat` from dsh (model via ctx.llm) so the maplay chat page
+   * becomes the dsh frontend, and redirect `/` to the chat page. Defaults to true.
+   */
+  chatBridge?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -83,10 +91,71 @@ export const Config: z<Config> = z.object({
   maxBoardChars: z.number().default(12_000),
   exposeWeb: z.boolean().default(true),
   webPath: z.string().default('/maplay'),
+  chatBridge: z.boolean().default(true),
 })
 
 /** Complete config after schemastery applies every field default. */
 type ResolvedConfig = Required<Config>
+
+/** Read a request body as JSON. */
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  return await new Promise((resolve, reject) => {
+    let raw = ''
+    req.on('data', (chunk) => {
+      raw += String(chunk)
+    })
+    req.on('end', () => {
+      try {
+        resolve(raw ? JSON.parse(raw) as unknown : {})
+      } catch (error) {
+        reject(error)
+      }
+    })
+    req.on('error', reject)
+  })
+}
+
+/**
+ * Serve one maplay-chat-style `/api/chat` POST: model comes from dsh's own
+ * llm route (provider/model/credentials), tools are the registered maplay
+ * suite; the reply keeps maplay's `{ text, toolCalls }` contract so the
+ * unmodified chat page drives the scene exactly as before.
+ */
+async function serveChatBridge(ctx: Context, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const writeError = (status: number, message: string): void => {
+    if (res.headersSent) {
+      res.destroy()
+      return
+    }
+    res.writeHead(status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: message }))
+  }
+  if (req.method !== 'POST') {
+    writeError(405, `method ${req.method ?? '?'} not allowed`)
+    return
+  }
+  try {
+    const payload = await readJsonBody(req)
+    const llm = ctx.get('llm')
+    const defaultModel = ctx.get('agentDefaultModel')
+    if (llm === undefined || defaultModel === undefined) {
+      writeError(503, 'dsh-maplay: llm or agentDefaultModel service unavailable')
+      return
+    }
+    const selection = defaultModel.currentSelection()
+    if (selection.provider.length === 0 || selection.model.length === 0) {
+      writeError(503, 'dsh-maplay: no model selected — configure a model in dsh first')
+      return
+    }
+    const result = await handleChatBridge(ctx, llm, selection, payload as OssChatRequest)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(result))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ctx.logger.error(`dsh-maplay: chat bridge failed: ${message}`)
+    writeError(502, message)
+  }
+}
 
 /** Load a map JSON file and POST it as the maplay playground session. */
 async function loadMapFile(client: MaplayClient, mapFile: string): Promise<void> {
@@ -170,10 +239,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (proxyRegistered) return
     proxyRegistered = true
     ctx.effect(() => {
-      return registerMaplayProxy(server as Parameters<typeof registerMaplayProxy>[0], {
+      const webServer = server as Parameters<typeof registerMaplayProxy>[0]
+      return registerMaplayProxy(webServer, {
         path: resolved.webPath,
         baseUrl: resolved.baseUrl,
         stripPrefix: proxyStripPrefix,
+        rootToChat: resolved.chatBridge,
+        chatHandler: resolved.chatBridge
+          ? (req, res) => serveChatBridge(ctx, req, res)
+          : undefined,
       })
     }, 'dsh-maplay.proxy')
   }

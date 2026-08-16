@@ -24,13 +24,17 @@ export const MAPLAY_API_PATHS = [
   '/api/board',
   '/api/tools/list',
   '/api/tools/call',
-  '/api/chat',
   '/api/playground/session',
   '/api/playground/session/action-complete',
   '/api/playground/session/events',
   '/api/playground/export/jpg',
   '/api/mcp/tools',
   '/api/mcp/call',
+] as const
+
+/** Static assets maplay serves at the root that the embedded frontends load directly. */
+export const MAPLAY_ROOT_PATHS = [
+  '/demo.json',
 ] as const
 
 export interface RegisterMaplayProxyOptions {
@@ -44,23 +48,39 @@ export interface RegisterMaplayProxyOptions {
    * maplay with `--base=<path>/` (vite already emits prefixed URLs).
    */
   stripPrefix?: boolean
+  /**
+   * Register an exact `/` route that redirects to `<path>/chat`, turning the
+   * maplay chat page into the dsh frontend landing page.
+   */
+  rootToChat?: boolean
+  /**
+   * When set, an exact `/api/chat` route is registered with this handler
+   * instead of proxying to maplay (the plugin's own chat bridge).
+   */
+  chatHandler?: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 }
 
 /**
- * Proxy one HTTP request to the upstream maplay origin. When `stripPrefix` is
- * set, the given prefix is removed from the forwarded pathname.
+ * Proxy one HTTP request to the upstream maplay origin.
+ * @param stripPrefix - when set, this prefix is removed from the forwarded pathname
+ *   (mount-prefixed requests to a root-relative upstream).
+ * @param prependPrefix - when set, this prefix is added to the forwarded pathname
+ *   (root-relative requests to a base-prefixed upstream, e.g. vite `--base`).
  */
 export function proxyToMaplay(
   baseUrl: string,
   req: IncomingMessage,
   res: ServerResponse,
   stripPrefix?: string,
+  prependPrefix?: string,
 ): void {
   const upstream = new URL(baseUrl)
   const raw = req.url ?? '/'
   const url = new URL(raw, upstream.origin)
   if (stripPrefix !== undefined && url.pathname.startsWith(`${stripPrefix}/`)) {
     url.pathname = url.pathname.slice(stripPrefix.length)
+  } else if (prependPrefix !== undefined) {
+    url.pathname = `${prependPrefix}${url.pathname}`
   }
 
   const headers: Record<string, string | string[] | undefined> = { ...req.headers }
@@ -121,24 +141,50 @@ export function registerMaplayProxy(
 ): () => void {
   const path = options.path ?? '/maplay'
   const upstream = options.baseUrl.replace(/\/+$/, '')
-  const stripPrefix = options.stripPrefix !== false ? path : undefined
+  // strip: mount-prefixed requests forwarded to a root-relative upstream;
+  // prepend: root-relative requests forwarded to a base-prefixed upstream.
+  const strip = options.stripPrefix !== false ? path : undefined
+  const prepend = options.stripPrefix === false ? path : undefined
   const disposers: Array<() => void> = []
+
+  if (options.rootToChat) {
+    // / -> /maplay/chat so opening dsh lands on the maplay chat page.
+    disposers.push(webServer.register({
+      kind: 'exact',
+      path: '/',
+      handler(req, res) {
+        const search = (req.url ?? '').includes('?') ? (req.url ?? '').slice((req.url ?? '').indexOf('?')) : ''
+        res.statusCode = 302
+        res.setHeader('Location', `${path}/chat${search}`)
+        res.end()
+      },
+    }))
+  }
+
+  // The chat bridge owns /api/chat; everything else in the API surface still proxies.
+  if (options.chatHandler !== undefined) {
+    disposers.push(webServer.register({
+      kind: 'exact',
+      path: '/api/chat',
+      handler: options.chatHandler,
+    }))
+  }
 
   disposers.push(webServer.register({
     kind: 'prefix',
     path,
     handler(req, res) {
-      // /maplay -> /maplay/playground so the playground is the landing page.
+      // /maplay -> /maplay/chat so the mounted root points at the chat page.
       const raw = req.url ?? '/'
       const pathname = raw.split('?')[0] ?? '/'
       if (pathname === path || pathname === `${path}/`) {
         const search = raw.includes('?') ? raw.slice(raw.indexOf('?')) : ''
         res.statusCode = 302
-        res.setHeader('Location', `${path}/playground${search}`)
+        res.setHeader('Location', `${path}/chat${search}`)
         res.end()
         return
       }
-      proxyToMaplay(upstream, req, res, stripPrefix)
+      proxyToMaplay(upstream, req, res, strip)
     },
   }))
 
@@ -148,6 +194,15 @@ export function registerMaplayProxy(
       kind: 'exact',
       path: apiPath,
       handler: (req, res) => proxyToMaplay(upstream, req, res),
+    }))
+  }
+
+  // Root-level static assets the frontends fetch (e.g. /demo.json for the map).
+  for (const rootPath of MAPLAY_ROOT_PATHS) {
+    disposers.push(webServer.register({
+      kind: 'exact',
+      path: rootPath,
+      handler: (req, res) => proxyToMaplay(upstream, req, res, undefined, prepend),
     }))
   }
 

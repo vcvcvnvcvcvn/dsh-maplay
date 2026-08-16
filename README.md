@@ -5,9 +5,10 @@
 `dsh-maplay` 是一个 Cordis 插件，挂在 dsh 旁边而不是改 dsh 内核：
 
 - **工具**：把 maplay 的 29 个动画工具（`get_board_info`、`moveTo`、`walkTo`、`emote`、`shoot`、`flyTo`、`jump`、`stateChange`……）注册进 dsh 的 `ctx.tools`，模型可以直接调用；每次调用通过 HTTP 桥接到 maplay 的 `/api/tools/call`。
+- **maplay chat 前端**：`dsh web` 打开后直接落在 maplay 的 `/chat` 页面（左边地图、右边聊天），聊天请求由插件的 `/api/chat` 桥接，模型走 dsh 的 `ctx.llm`——provider、model、凭据全部来自 dsh 自己的配置，前端零改动、无需填 API Key。
 - **生命周期**：插件启动时自动拉起 maplay 的 Vite dev server（已运行则复用），并把地图 JSON 加载进会话。
-- **嵌入视图**：在 dsh Web UI 上注册 `/maplay` 代理，`http://127.0.0.1:3080/maplay/playground` 直接看到实时动画场景。
-- **提示词**：注册一段 system prompt 段落，教会模型「先 `get_board_info` 再动，只使用真实存在的 ID」。
+- **嵌入视图**：在 dsh Web UI 上注册 `/maplay` 代理，`/maplay/playground` 可看全屏动画场景。
+- **提示词**：注册一段 system prompt 段落，教会模型「先 `get_board_info` 再动，只使用真实存在的 ID」；chat 桥还会把 maplay 页面的场景摘要拼进每次模型请求。
 
 一切注册都是 effect 作用域：插件卸载时工具、路由自动回收，spawn 的 maplay 进程也会被终止。
 
@@ -15,17 +16,20 @@
 
 ```text
 ┌────────────────────────────── dsh ──────────────────────────────┐
-│  agent loop → ctx.tools (29 maplay tools) → ctx.systemPrompt   │
-│      │                             │                            │
-│  dsh-maplay plugin (this repo) ────┘                            │
-│      │ HTTP bridge (POST /api/tools/call)                       │
-│      │ /maplay reverse proxy (ctx.webServer)                    │
+│  maplay /chat 页面（浏览器）                                     │
+│    │ 同源 POST /api/chat {text, toolCalls}                       │
+│    ▼                                                             │
+│  dsh-maplay chat bridge → ctx.llm（模型凭据用 dsh 的配置）        │
+│    │                                                            │
+│  ctx.tools（29 个 maplay 工具，供 headless/web agent 直接调用）    │
+│      │ HTTP bridge (POST /api/tools/call)                        │
+│      │ /maplay 反向代理（ctx.webServer）                          │
 └──────┼──────────────────────────────────────────────────────────┘
        ▼
 ┌────────────────────────── maplay ───────────────────────────────┐
 │  Vite dev server :8992                                          │
 │  /api/tools/*  /api/board  /api/playground/session ...          │
-│  /playground  ← 浏览器里实时动画                                 │
+│  /chat /playground ← 浏览器里的实时动画                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -35,23 +39,24 @@
 
 前置：Node.js 22+、maplay checkout（`npm install` 过）。
 
-### Web 模式（推荐）
+### Web 模式（推荐，打开即 maplay chat）
 
 ```bash
 dsh web --patch /path/to/dsh-maplay/cordis.yml
 ```
 
-- 打开 `http://127.0.0.1:3080` 进入 dsh Web UI；
-- 打开 `http://127.0.0.1:3080/maplay/playground` 看实时动画；
+- 打开 `http://127.0.0.1:3080` → 直接进入 maplay 的 chat 页面（左边地图、右边聊天），模型已默认使用 dsh 配置的 provider/model，不需要填任何 API Key；
+- 在「AI 配置」里还可以改 System Prompt；Base URL / API Key / Model 字段由 dsh 接管，填写会被忽略；
+- 想全屏看动画：`http://127.0.0.1:3080/maplay/playground`；
 - 在会话里输入比如：
 
-  > Start the tortoise and hare race. Let Leo announce the start, Toby walks to the carrots, Harry naps at the tree.
+  > 让 Leo 宣布比赛开始，Toby 慢走到胡萝卜，Harry 跳到树下睡一觉
 
-### Headless 模式（一次性任务）
+### Headless 模式（一次性任务，dsh agent 直接驱动服务端地图）
 
 ```bash
 dsh --profile headless --patch /path/to/dsh-maplay/cordis.headless.yml \
-  "Animate a short race: Leo the referee announces the start, Toby the tortoise walks slowly to the carrots, Harry the hare jumps to the tree."
+  "让乌龟慢走到胡萝卜，兔子跳到树旁"
 ```
 
 ### 环境变量
@@ -81,6 +86,7 @@ cordis.yml 中 `config` 支持：
 | `maxBoardChars` | `12000` | 工具结果里 board 文本上限 |
 | `exposeWeb` | `true` | 注册 `/maplay` 嵌入视图（headless 下自动跳过） |
 | `webPath` | `/maplay` | 嵌入视图路径前缀 |
+| `chatBridge` | `true` | 用 dsh 的 `ctx.llm` 接管 `/api/chat`，并把 `/` 重定向到 chat 页面（maplay chat 成为 dsh 前端） |
 
 ## 工具清单
 

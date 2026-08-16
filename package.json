@@ -34,11 +34,13 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.5",
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "0.0.1-rc.5",
+    "@deepseek-ai/dsh-agent-default-model": "0.0.1-rc.5",
     "@deepseek-ai/dsh-host-webserver": "0.0.1-rc.5",
     "@deepseek-ai/dsh-llm": "0.0.1-rc.5",
     "@deepseek-ai/dsh-scope": "^0.0.1-rc.5",

@@ -5,8 +5,11 @@
 #
 # The plugin spawns the maplay Vite dev server (if nothing is already
 # listening on port 8992), loads a map JSON into its session, registers the
-# full maplay tool suite in the agent, and embeds the live playground at:
-#   http://127.0.0.1:3080/maplay/playground   (3080 = dsh Web UI default port)
+# full maplay tool suite, and — most importantly — makes the maplay chat
+# page the dsh frontend: opening http://127.0.0.1:3080 lands directly on
+# /maplay/chat (left: live map, right: conversation), and chat requests are
+# bridged to dsh's own model route (ctx.llm), so no API key entry is needed.
+# /maplay/playground still shows the full-screen scene.
 #
 # NOTE: the plugin `name` must be an ABSOLUTE path — relative names resolve
 # against the dsh profile directory (~/.dsh/profiles/web/), not this file.
