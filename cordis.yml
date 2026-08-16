@@ -1,0 +1,31 @@
+# dsh-maplay overlay for `dsh web` / `dsh --profile web`.
+#
+# Usage:
+#   dsh web --patch /path/to/dsh-maplay/cordis.yml
+#
+# The plugin spawns the maplay Vite dev server (if nothing is already
+# listening on port 8992), loads a map JSON into its session, registers the
+# full maplay tool suite in the agent, and embeds the live playground at:
+#   http://127.0.0.1:3080/maplay/playground   (3080 = dsh Web UI default port)
+#
+# NOTE: the plugin `name` must be an ABSOLUTE path — relative names resolve
+# against the dsh profile directory (~/.dsh/profiles/web/), not this file.
+# The `!!js` expressions below are evaluated with Node globals in scope:
+#   MAPPLAY_DIR   maplay checkout directory (default /Users/vcvcvn/workspace/maplay)
+#   MAPPLAY_MAP   map JSON to load (default <MAPPLAY_DIR>/demo.json)
+
+- insert:
+    - id: maplay
+      name: /Users/vcvcvn/workspace/dsh-maplay/lib/index.js
+      config:
+        baseUrl: http://127.0.0.1:8992
+        spawn: true
+        maplayDir: !!js (process.env.MAPPLAY_DIR || '/Users/vcvcvn/workspace/maplay')
+        port: 8992
+        host: 127.0.0.1
+        mapFile: !!js (process.env.MAPPLAY_MAP || (process.env.MAPPLAY_DIR || '/Users/vcvcvn/workspace/maplay') + '/demo.json')
+        prefix: ''
+        fetchTimeoutMs: 30000
+        maxBoardChars: 12000
+        exposeWeb: true
+        webPath: /maplay
