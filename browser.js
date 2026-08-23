@@ -29,7 +29,10 @@ window.__ModuleLoader__.load({
       });
       if (preset !== "maplay") return null;
       return React.createElement("iframe", {
-        src: "/maplay/playground",
+        // Per-session scene: the session id routes this view to the same
+        // isolated map the session's agent tool calls mutate, so each
+        // conversation sees its own world.
+        src: "/maplay/playground?scene=" + encodeURIComponent(props.sessionId),
         title: "maplay 地图",
         style: {
           display: "block",

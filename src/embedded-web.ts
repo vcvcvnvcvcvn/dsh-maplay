@@ -69,6 +69,13 @@ function writeJson(res: ServerResponse, status: number, payload: unknown): void 
   res.end(JSON.stringify(payload))
 }
 
+/** Extract the `scene` query param (isolated scene key) from a request URL. */
+function sceneFromUrl(raw: string | undefined): string {
+  const url = new URL(raw ?? '/', 'http://x')
+  const scene = url.searchParams.get('scene')
+  return scene !== null && scene.length > 0 ? scene : DEFAULT_SCENE
+}
+
 /** Serve one static file from the maplay dist root. */
 async function serveStaticFile(
   pathname: string,
@@ -151,8 +158,10 @@ export function serveMaplayEmbedded(
       kind: 'exact',
       path: html === 'chat' ? `${path}/chat` : `${path}/${html}`,
       handler: (req, res) => {
+        const raw = req.url ?? ''
+        const search = raw.includes('?') ? raw.slice(raw.indexOf('?')) : ''
         res.statusCode = 302
-        res.setHeader('Location', `${path}/${html}.html`)
+        res.setHeader('Location', `${path}/${html}.html${search}`)
         res.end()
       },
     }))
@@ -174,7 +183,7 @@ export function serveMaplayEmbedded(
   disposers.push(webServer.register({
     kind: 'exact',
     path: '/api/board',
-    handler: (_req, res) => writeJson(res, 200, store.board(DEFAULT_SCENE)),
+    handler: (req, res) => writeJson(res, 200, store.board(sceneFromUrl(req.url))),
   }))
   disposers.push(webServer.register({
     kind: 'exact',
@@ -194,7 +203,7 @@ export function serveMaplayEmbedded(
           writeJson(res, 400, { ok: false, error: 'missing tool' })
           return
         }
-        const result = await store.executeTool(DEFAULT_SCENE, payload.tool, payload.args ?? {})
+        const result = await store.executeTool(sceneFromUrl(req.url), payload.tool, payload.args ?? {})
         writeJson(res, 200, result)
       } catch (error) {
         writeJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -205,8 +214,9 @@ export function serveMaplayEmbedded(
     kind: 'exact',
     path: '/api/playground/session',
     handler: async (req, res) => {
+      const scene = sceneFromUrl(req.url)
       if (req.method === 'GET') {
-        writeJson(res, 200, store.get(DEFAULT_SCENE))
+        writeJson(res, 200, store.get(scene))
         return
       }
       if (req.method === 'POST') {
@@ -216,7 +226,7 @@ export function serveMaplayEmbedded(
             writeJson(res, 400, { error: 'missing map' })
             return
           }
-          writeJson(res, 200, store.set(DEFAULT_SCENE, createSceneState(payload.map)))
+          writeJson(res, 200, store.set(scene, createSceneState(payload.map)))
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
@@ -235,7 +245,7 @@ export function serveMaplayEmbedded(
           writeJson(res, 400, { ok: false, error: 'requestId 不能为空' })
           return
         }
-        const ok = store.acknowledgeAction(DEFAULT_SCENE, payload.requestId)
+        const ok = store.acknowledgeAction(sceneFromUrl(req.url), payload.requestId)
         writeJson(res, ok ? 200 : 404, ok ? { ok: true } : { ok: false, error: '当前没有可用 session' })
       } catch (error) {
         writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -246,14 +256,15 @@ export function serveMaplayEmbedded(
     kind: 'exact',
     path: '/api/playground/session/events',
     handler: (req, res) => {
+      const scene = sceneFromUrl(req.url)
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
       })
-      const snapshot = store.get(DEFAULT_SCENE)
+      const snapshot = store.get(scene)
       res.write(`data: ${JSON.stringify(snapshot)}\n\n`)
-      const unsubscribe = store.subscribe(DEFAULT_SCENE, (_key, state) => {
+      const unsubscribe = store.subscribe(scene, (_key, state) => {
         res.write(`data: ${JSON.stringify(state)}\n\n`)
       })
       req.on('close', () => {
@@ -285,7 +296,7 @@ export function serveMaplayEmbedded(
     path: '/api/mcp/call',
     handler: async (req, res) => {
       const payload = await readJsonBody(req) as { name?: string; args?: Record<string, unknown> }
-      const result = await store.executeTool(DEFAULT_SCENE, payload.name ?? '', payload.args ?? {})
+      const result = await store.executeTool(sceneFromUrl(req.url), payload.name ?? '', payload.args ?? {})
       writeJson(res, 200, { ok: result.ok, content: result.summary })
     },
   }))
