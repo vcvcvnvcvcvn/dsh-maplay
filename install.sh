@@ -44,8 +44,8 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 # ── 3. 插件 ─────────────────────────────────────────────────────────────────
-log "安装 dsh-maplay 插件（GitHub）…"
-dsh plugin add github:vcvcvnvcvcvn/dsh-maplay
+log "安装 dsh-maplay 插件（GitHub）到 web profile…"
+dsh plugin --profile web add github:vcvcvnvcvcvn/dsh-maplay
 
 # ── 4. preset ───────────────────────────────────────────────────────────────
 log "放置 maplay agent preset…"
