@@ -2,24 +2,15 @@
  * Embedded web surface: serves the maplay frontend (built dist from
  * @vcvcvn/maplay) and the full HTTP API from inside this process — no maplay
  * server involved. Playground pages receive animations over SSE from the
- * in-process maplay session; chat pages hit the chat bridge; tool calls run
- * through the in-process executor.
+ * default scene of the in-process {@link SceneStore}; chat pages hit the chat
+ * bridge; agent tool calls are keyed per dsh session (see executor.ts).
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize, resolve, sep } from 'node:path'
-import {
-  acknowledgePlaygroundAction,
-  getPlaygroundSessionState,
-  handleHttpMcpToolCall,
-  handleHttpMcpTools,
-  readPlaygroundPreviewJpg,
-  setPlaygroundSessionState,
-  subscribeToPlaygroundSession,
-} from '@vcvcvn/maplay'
-import type { ToolExecutor } from './executor.js'
-import { embeddedBoard, embeddedToolList } from './executor.js'
+import { handleHttpMcpToolCall, handleHttpMcpTools, readPlaygroundPreviewJpg } from '@vcvcvn/maplay'
+import { DEFAULT_SCENE, createSceneState, type SceneStore } from './scene-store.js'
 
 /** Absolute path of the maplay package (resolved via its own package.json). */
 export function maplayPackageRoot(): string {
@@ -28,7 +19,6 @@ export function maplayPackageRoot(): string {
 
 /** Require-compatible resolve of the maplay package.json path. */
 function dirnameOfPackageJson(): string {
-  // Node 22+: import.meta.resolve returns a file:// URL for the exported file.
   const resolved = new URL(import.meta.resolve('@vcvcvn/maplay/package.json'))
   return dirnameOfFileUrl(resolved)
 }
@@ -53,6 +43,7 @@ const MIME: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
   '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
   '.map': 'application/json',
 }
 
@@ -114,6 +105,8 @@ async function serveStaticFile(
 export interface ServeEmbeddedOptions {
   /** Route prefix, e.g. /maplay. */
   path: string
+  /** Redirect `/` to `<path>/chat` (maplay chat as the dsh frontend). Defaults to true. */
+  rootToChat?: boolean
   /** Optional POST /api/chat handler (chat bridge). */
   chatHandler?: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
   /** Optional HTML snippet (or provider) injected into every served HTML page. */
@@ -121,9 +114,10 @@ export interface ServeEmbeddedOptions {
 }
 
 /**
- * Register the embedded maplay routes on ctx.webServer. Returns the disposer.
- * Route registrations are plain map entries, so the disposer must be returned
- * from a ctx.effect body.
+ * Register the embedded maplay routes on ctx.webServer, backed by the
+ * per-session {@link SceneStore} (web/HTTP traffic uses the default scene).
+ * Returns the disposer; route registrations are plain map entries, so the
+ * disposer must be returned from a ctx.effect body.
  */
 export function serveMaplayEmbedded(
   webServer: {
@@ -133,22 +127,24 @@ export function serveMaplayEmbedded(
       handler(req: IncomingMessage, res: ServerResponse): void | Promise<void>
     }): () => void
   },
-  executor: ToolExecutor,
+  store: SceneStore,
   options: ServeEmbeddedOptions,
 ): () => void {
   const path = options.path
   const disposers: Array<() => void> = []
 
-  // Landing: / -> /maplay/chat and /maplay -> /maplay/chat.
-  disposers.push(webServer.register({
-    kind: 'exact',
-    path: '/',
-    handler: (req, res) => {
-      res.statusCode = 302
-      res.setHeader('Location', `${path}/chat`)
-      res.end()
-    },
-  }))
+  // Landing: / -> /maplay/chat (when rootToChat) and /maplay -> /maplay/chat.
+  if (options.rootToChat !== false) {
+    disposers.push(webServer.register({
+      kind: 'exact',
+      path: '/',
+      handler: (req, res) => {
+        res.statusCode = 302
+        res.setHeader('Location', `${path}/chat`)
+        res.end()
+      },
+    }))
+  }
 
   const redirectToHtml = (html: string): void => {
     disposers.push(webServer.register({
@@ -174,16 +170,19 @@ export function serveMaplayEmbedded(
     }))
   }
 
-  // maplay HTTP API, all in-process.
+  // maplay HTTP API, all in-process, default scene.
   disposers.push(webServer.register({
     kind: 'exact',
     path: '/api/board',
-    handler: (_req, res) => writeJson(res, 200, embeddedBoard()),
+    handler: (_req, res) => writeJson(res, 200, store.board(DEFAULT_SCENE)),
   }))
   disposers.push(webServer.register({
     kind: 'exact',
     path: '/api/tools/list',
-    handler: (_req, res) => writeJson(res, 200, embeddedToolList()),
+    handler: async (_req, res) => {
+      const { handleHttpToolList } = await import('@vcvcvn/maplay')
+      writeJson(res, 200, await handleHttpToolList())
+    },
   }))
   disposers.push(webServer.register({
     kind: 'exact',
@@ -195,7 +194,7 @@ export function serveMaplayEmbedded(
           writeJson(res, 400, { ok: false, error: 'missing tool' })
           return
         }
-        const result = await executor.call(payload.tool, payload.args ?? {})
+        const result = await store.executeTool(DEFAULT_SCENE, payload.tool, payload.args ?? {})
         writeJson(res, 200, result)
       } catch (error) {
         writeJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -207,13 +206,17 @@ export function serveMaplayEmbedded(
     path: '/api/playground/session',
     handler: async (req, res) => {
       if (req.method === 'GET') {
-        writeJson(res, 200, getPlaygroundSessionState())
+        writeJson(res, 200, store.get(DEFAULT_SCENE))
         return
       }
       if (req.method === 'POST') {
         try {
-          const payload = await readJsonBody(req)
-          writeJson(res, 200, setPlaygroundSessionState(payload as Parameters<typeof setPlaygroundSessionState>[0]))
+          const payload = await readJsonBody(req) as { map?: unknown }
+          if (payload.map === undefined) {
+            writeJson(res, 400, { error: 'missing map' })
+            return
+          }
+          writeJson(res, 200, store.set(DEFAULT_SCENE, createSceneState(payload.map)))
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
@@ -232,8 +235,8 @@ export function serveMaplayEmbedded(
           writeJson(res, 400, { ok: false, error: 'requestId 不能为空' })
           return
         }
-        const result = acknowledgePlaygroundAction(payload.requestId)
-        writeJson(res, result ? 200 : 404, result ?? { ok: false, error: '当前没有可用 session' })
+        const ok = store.acknowledgeAction(DEFAULT_SCENE, payload.requestId)
+        writeJson(res, ok ? 200 : 404, ok ? { ok: true } : { ok: false, error: '当前没有可用 session' })
       } catch (error) {
         writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
       }
@@ -248,11 +251,9 @@ export function serveMaplayEmbedded(
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
       })
-      const snapshot = getPlaygroundSessionState()
-      if (snapshot !== null) {
-        res.write(`data: ${JSON.stringify(snapshot)}\n\n`)
-      }
-      const unsubscribe = subscribeToPlaygroundSession((state) => {
+      const snapshot = store.get(DEFAULT_SCENE)
+      res.write(`data: ${JSON.stringify(snapshot)}\n\n`)
+      const unsubscribe = store.subscribe(DEFAULT_SCENE, (_key, state) => {
         res.write(`data: ${JSON.stringify(state)}\n\n`)
       })
       req.on('close', () => {
@@ -264,7 +265,10 @@ export function serveMaplayEmbedded(
     kind: 'exact',
     path: '/api/playground/export/jpg',
     handler: (_req, res) => {
-      const result = readPlaygroundPreviewJpg(getPlaygroundSessionState())
+      const scene = store.has(DEFAULT_SCENE) ? store.get(DEFAULT_SCENE) : null
+      const result = readPlaygroundPreviewJpg(
+        scene === null ? null : { map: scene.map, messages: [], actionRequest: null, actionQueue: scene.actionQueue, previewJpgDataUrl: null, updatedAt: scene.updatedAt },
+      )
       writeJson(res, result.ok ? 200 : 404, result)
     },
   }))
@@ -281,7 +285,8 @@ export function serveMaplayEmbedded(
     path: '/api/mcp/call',
     handler: async (req, res) => {
       const payload = await readJsonBody(req) as { name?: string; args?: Record<string, unknown> }
-      writeJson(res, 200, await handleHttpMcpToolCall({ name: payload.name ?? '', args: payload.args }))
+      const result = await store.executeTool(DEFAULT_SCENE, payload.name ?? '', payload.args ?? {})
+      writeJson(res, 200, { ok: result.ok, content: result.summary })
     },
   }))
 

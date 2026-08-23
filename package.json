@@ -10,10 +10,24 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./tools-preset": {
+      "types": "./lib/tools-preset.d.ts",
+      "default": "./lib/tools-preset.js"
+    },
+    "./client": "./browser.js",
     "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "react"
+      ],
+      "platform": "web"
+    }
   },
   "files": [
     "lib",
+    "browser.js",
     "cordis.yml",
     "cordis.headless.yml",
     "README.md"

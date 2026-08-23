@@ -3,28 +3,28 @@
 # Usage:
 #   dsh web --patch /path/to/dsh-maplay/cordis.yml
 #
-# Default mode is EMBEDDED and fully self-contained: maplay's tool executor
-# runs inside the dsh process and the built frontend is served from the
-# @vcvcvn/maplay npm package. No maplay checkout, no vite, no extra process.
+# dsh-maplay is a dual-face plugin:
+#   - host half (lib/index.js) runs maplay's tool executor in-process, serves
+#     the built frontend from @vcvcvn/maplay, and publishes the executor under
+#     the `maplay` service;
+#   - browser half (lib/browser.js) registers the "地图" view tab (iframe over
+#     /maplay/playground), gated on the maplay agent preset.
 #
-# Opening http://127.0.0.1:3080 lands directly on the maplay chat page
-# (left: live map, right: conversation). Chat requests are bridged to dsh's
-# own model route (ctx.llm) — no API key entry needed. /maplay/playground
-# shows the full-screen scene, animated over SSE from the in-process session.
+# The model-facing tools are NOT registered here — they belong to the maplay
+# agent preset (dsh-maplay's tools-preset half). With `chatBridge: false` the
+# dsh shell keeps `/`.
 #
-# NOTE: the plugin `name` must be an ABSOLUTE path — relative names resolve
-# against the dsh profile directory (~/.dsh/profiles/web/), not this file.
-# After `dsh plugin add dsh-maplay`, use the bare package name instead (see
-# README "发布 / 给别人用").
+# The plugin is referenced by PACKAGE NAME, so it must resolve from the dsh
+# profile's node_modules (e.g. `dsh plugin add dsh-maplay`, or a symlink into
+# ~/.dsh/profiles/node_modules/ during local development).
 #
 # Optional fields:
 #   mapFile     自己的地图 JSON；缺省用 @vcvcvn/maplay 自带的 demo.json
 #   embedded    false 时切换为外部桥接模式（baseUrl + spawn + maplayDir 生效）
-#   chatSystemPrompt  自定义 chat 桥的 System Prompt
 
 - insert:
     - id: maplay
-      name: /Users/vcvcvn/workspace/dsh-maplay/lib/index.js
+      name: dsh-maplay
       config:
         embedded: true
         # mapFile: /绝对/路径/到/你的地图.json
@@ -33,5 +33,4 @@
         maxBoardChars: 12000
         exposeWeb: true
         webPath: /maplay
-        chatBridge: true
-        # chatSystemPrompt: 自定义 System Prompt
+        chatBridge: false

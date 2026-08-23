@@ -41,14 +41,20 @@ import { MaplayClient } from './client.js'
 import { registerMaplayTools } from './tools.js'
 import { ensureMaplayServer, stopMaplayServer, type MaplaySpawnResult } from './spawn.js'
 import { registerMaplayProxy } from './proxy.js'
-import { EmbeddedExecutor, HttpExecutor, loadEmbeddedMap, type ToolExecutor } from './executor.js'
+import { EmbeddedExecutor, HttpExecutor, type ToolExecutor } from './executor.js'
 import { maplayPackageRoot, serveMaplayEmbedded } from './embedded-web.js'
+import { SceneStore } from './scene-store.js'
 import { handleChatBridge, type OssChatRequest } from './chat-bridge.js'
 
 /** Stable Cordis plugin name used by loader diagnostics. */
 export const name = 'dsh-maplay'
 
-/** Services required by the plugin. `webServer` is optional (checked via ctx.get). */
+/**
+ * Services required by the host half. `webServer` is optional (checked via
+ * ctx.get). The model-facing `tools`/`systemPrompt` registries are NOT injected
+ * here anymore: they belong to the preset half (`tools-preset.ts`), which the
+ * host half feeds by publishing the executor under the `maplay` service.
+ */
 export const inject = ['tools', 'systemPrompt', 'llm', 'agentDefaultModel']
 
 /** Plugin config. Every field has a default, so a bare `- insert: { name: dsh-maplay }` already works. */
@@ -216,20 +222,28 @@ async function applyEmbedded(ctx: Context, resolved: ResolvedConfig): Promise<vo
   // "register everything" rather than "register nothing". Also guard the
   // raw-config path (tests, programmatic use) where tools may be undefined.
   const enabledTools = resolved.tools !== undefined && resolved.tools.length > 0 ? resolved.tools : undefined
-  const executor = new EmbeddedExecutor(enabledTools)
 
-  // Load the map into the in-process maplay session.
+  // Each dsh session gets its own map scene: the SceneStore lazily clones the
+  // initial map per sessionId on first tool call, so sessions never share
+  // state. The web/HTTP channel uses the reserved `default` scene.
   const map = await readMapFile(resolved.mapFile)
-  loadEmbeddedMap(map)
+  const store = new SceneStore(map)
+  const executor = new EmbeddedExecutor(map, enabledTools)
 
+  // Publish the executor under the `maplay` service so the preset half
+  // (dsh-maplay-tools) can register the model-facing tools into its own
+  // session scope; the executor routes every call to the caller's scene.
+  ctx.provide('maplay', executor)
+
+  // Host-level global registration keeps headless and preset-less agents
+  // working; when the dsh-maplay-tools preset also mounts, its per-scope
+  // registrations shadow these globals (same executor, per-session scenes).
   registerMaplayTools(ctx, executor, {
     prefix: resolved.prefix,
     enabledTools,
     timeoutMs: resolved.fetchTimeoutMs,
     maxBoardChars: resolved.maxBoardChars,
   })
-  ctx.logger.info(`dsh-maplay: embedded mode active (map: ${(map as { name?: string }).name ?? 'unknown'})`)
-
   ctx.systemPrompt.section({
     name: 'tool:dsh-maplay',
     order: 120,
@@ -240,6 +254,7 @@ async function applyEmbedded(ctx: Context, resolved: ResolvedConfig): Promise<vo
       `compose several calls to tell a story. When a tool reports an error such as an unknown target, ` +
       `re-read the board and retry with a real ID.`,
   })
+  ctx.logger.info(`dsh-maplay: embedded mode active (map: ${(map as { name?: string }).name ?? 'unknown'}; per-session scenes)`)
 
   // Optional seam: serve the maplay frontend + API on ctx.webServer.
   // The webServer service may activate after this plugin (it lives in the
@@ -251,8 +266,9 @@ async function applyEmbedded(ctx: Context, resolved: ResolvedConfig): Promise<vo
     if (webServer === undefined) return
     webRegistered = true
     ctx.effect(() => {
-      return serveMaplayEmbedded(webServer, executor, {
+      return serveMaplayEmbedded(webServer, store, {
         path: resolved.webPath,
+        rootToChat: resolved.chatBridge,
         chatHandler: resolved.chatBridge
           ? (req, res) => serveChatBridge(ctx, req, res, resolved.chatSystemPrompt)
           : undefined,
@@ -279,24 +295,10 @@ async function applyExternal(ctx: Context, resolved: ResolvedConfig): Promise<vo
     }
   }, 'dsh-maplay.spawn')
 
-  const enabledTools = resolved.tools !== undefined && resolved.tools.length > 0 ? resolved.tools : undefined
-  registerMaplayTools(ctx, executor, {
-    prefix: resolved.prefix,
-    enabledTools,
-    timeoutMs: resolved.fetchTimeoutMs,
-    maxBoardChars: resolved.maxBoardChars,
-  })
-
-  ctx.systemPrompt.section({
-    name: 'tool:dsh-maplay',
-    order: 120,
-    text:
-      `maplay tools control a live 2D map animation scene (entities, objects, walls, doors, camera, ` +
-      `projectiles, emotion bubbles). Before animating, call get_board_info to learn the real IDs that ` +
-      `exist on the current board, and only use IDs returned there. Each call applies one animation beat; ` +
-      `compose several calls to tell a story. When a tool reports an error such as an unknown target, ` +
-      `re-read the board and retry with a real ID.`,
-  })
+  // Publish the executor so the preset half can register tools into its own
+  // session scope. (External mode keeps the HTTP bridge behind the same
+  // `ToolExecutor` face.)
+  ctx.provide('maplay', executor)
 
   // Optional seam: embed the maplay playground inside the dsh Web UI.
   let proxyStripPrefix = true
@@ -370,5 +372,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 export { MaplayClient, MaplayError, type MaplayToolResult, type MaplayToolInfo, type MaplayClientOptions } from './client.js'
 export { MAPLAY_TOOL_SPECS, MAPLAY_TOOL_NAMES, type MaplayToolSpec } from './schemas.js'
 export { formatBoard, formatResult } from './tools.js'
-export { EmbeddedExecutor, HttpExecutor, loadEmbeddedMap, embeddedBoard, embeddedToolList, type ToolExecutor } from './executor.js'
+export { EmbeddedExecutor, HttpExecutor, type ToolExecutor } from './executor.js'
 export { serveMaplayEmbedded, maplayPackageRoot } from './embedded-web.js'
+export { SceneStore, DEFAULT_SCENE, createSceneState, type SceneState, type SceneToolResult } from './scene-store.js'

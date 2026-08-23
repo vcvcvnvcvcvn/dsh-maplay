@@ -150,7 +150,9 @@ export function registerMaplayTools(ctx: Context, executor: ToolExecutor, option
       // maplay action queue, so concurrent mutating calls are unsafe.
       isConcurrencySafe: () => spec.concurrencySafe,
       async execute(args, exec) {
-        const result = await executor.call(spec.name, args as Record<string, unknown>, exec.signal)
+        // Per-session scenes: the calling agent's id selects its own map state.
+        const sessionId = exec.agent?.id
+        const result = await executor.call(spec.name, args as Record<string, unknown>, exec.signal, sessionId)
         return result as unknown as Record<string, JsonValue>
       },
       presentCall: (args) => presentMaplayCall(spec, args as Record<string, unknown>),
