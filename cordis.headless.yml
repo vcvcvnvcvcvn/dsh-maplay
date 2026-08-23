@@ -9,7 +9,7 @@
 
 - insert:
     - id: maplay
-      name: /Users/vcvcvn/workspace/dsh-maplay/lib/index.js
+      name: dsh-maplay
       config:
         embedded: true
         prefix: ''
