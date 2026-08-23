@@ -44,6 +44,26 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 # ── 3. 插件 ─────────────────────────────────────────────────────────────────
+# pnpm 默认禁止 git 依赖作为子依赖（@vcvcvn/maplay 是 github 引用），
+# 需要在 profile 的 pnpm-workspace.yaml 显式放行；initProfile 不会覆盖已存在的 yaml。
+PROFILE_DIR="$HOME/.dsh/profiles/web"
+WORKSPACE_YAML="$PROFILE_DIR/pnpm-workspace.yaml"
+mkdir -p "$PROFILE_DIR"
+if [ ! -f "$WORKSPACE_YAML" ]; then
+  cat > "$WORKSPACE_YAML" << 'YAML'
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+blockExoticSubdeps: false
+YAML
+  log "已预写 pnpm-workspace.yaml（放行 git 子依赖）"
+elif ! grep -q "blockExoticSubdeps" "$WORKSPACE_YAML"; then
+  printf 'blockExoticSubdeps: false\n' >> "$WORKSPACE_YAML"
+  log "已追加 blockExoticSubdeps: false 到 pnpm-workspace.yaml"
+fi
+
 log "安装 dsh-maplay 插件（GitHub）到 web profile…"
 dsh plugin --profile web add github:vcvcvnvcvcvn/dsh-maplay
 
@@ -57,10 +77,10 @@ log "preset 已放置：$HOME/.dsh/.agent-presets/maplay"
 PATCH_FILE="$HOME/.dsh/profiles/web/cordis.patch.yml"
 if [ -f "$PATCH_FILE" ] && grep -q "id: maplay" "$PATCH_FILE" 2>/dev/null; then
   log "cordis.patch.yml 已包含 maplay 挂载，跳过。"
-else
-  mkdir -p "$HOME/.dsh/profiles/web"
-  if [ -f "$PATCH_FILE" ] && [ "$(wc -c < "$PATCH_FILE")" -gt 4 ]; then
-    # 已有内容：备份后追加（保持 YAML 顶层数组的合法性交给用户确认）
+elif [ -f "$PATCH_FILE" ]; then
+  # 已有实质内容（非注释、非空数组模板）则备份提示，否则覆盖写入
+  meaningful=$(grep -vE '^\s*#|^\s*$' "$PATCH_FILE" 2>/dev/null | grep -vE '^\s*\[\s*\]\s*$' | head -1)
+  if [ -n "$meaningful" ]; then
     cp "$PATCH_FILE" "$PATCH_FILE.bak"
     warn "检测到 cordis.patch.yml 已有内容，已备份到 .bak，请手动合并以下挂载："
     cat << 'PATCH'
@@ -93,6 +113,23 @@ PATCH
 PATCH
     log "已挂载：$PATCH_FILE"
   fi
+else
+  mkdir -p "$HOME/.dsh/profiles/web"
+  cat > "$PATCH_FILE" << 'PATCH'
+# dsh-maplay 持久化挂载（host 插件）。
+- insert:
+    - id: maplay
+      name: dsh-maplay
+      config:
+        embedded: true
+        prefix: ''
+        fetchTimeoutMs: 30000
+        maxBoardChars: 12000
+        exposeWeb: true
+        webPath: /maplay
+        chatBridge: false
+PATCH
+  log "已挂载：$PATCH_FILE"
 fi
 
 log "完成！现在运行 dsh web，新建会话时选择 preset「地图动画（maplay）」即可。"
