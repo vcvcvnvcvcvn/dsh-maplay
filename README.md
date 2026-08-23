@@ -4,7 +4,7 @@
 
 - 29 个 maplay 工具（`get_board_info`、`moveTo`、`shoot`、`flyTo`……）只在 `maplay` preset 下出现
 - 前端保留 DSH 完整界面（侧边栏 / 对话历史 / 设置），会话头多一个「地图」tab，点开是实时地图
-- 地图是进程内单例，动画通过 SSE 实时广播
+- **每会话独立地图**：地图按 `sessionId` 隔离——每个 agent 会话（及其「地图」tab）拥有自己的地图世界，互不共享；动画通过 SSE 实时广播到对应会话
 
 ## 目录结构
 

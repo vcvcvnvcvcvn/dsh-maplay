@@ -146,10 +146,9 @@ export class SceneStore {
     return true
   }
 
-  /** Board snapshot for one scene. */
+  /** Board snapshot for one scene (lazily initializes it from the seed map). */
   board(key: string): { ok: boolean; board?: unknown; error?: string } {
-    if (!this.scenes.has(key)) return { ok: false, error: '当前没有可用地图' }
-    return { ok: true, board: createBoardInfo(this.scenes.get(key)!.map) }
+    return { ok: true, board: createBoardInfo(this.get(key).map) }
   }
 
   /** Subscribe to state changes for one scene; returns the unsubscribe. */
