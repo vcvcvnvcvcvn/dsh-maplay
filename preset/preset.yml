@@ -1,0 +1,2 @@
+name: 地图动画（maplay）
+description: 功能完整的编码 Agent，额外带 maplay 2D 地图动画工具集（get_board_info、moveTo、shoot、flyTo 等 29 个），可驱动实时地图场景的实体、墙体、门、摄像机、投射物与表情气泡。
